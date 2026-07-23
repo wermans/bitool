@@ -1,0 +1,123 @@
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: bitool
+      POSTGRES_PASSWORD: bitool
+      POSTGRES_DB: bitool
+    ports:
+      - "55432:5432" # host:container — 5432 já pode estar em uso localmente
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./docker/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U bitool"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # Camada semântica (Cube.js) — modelagem versionada em ./cube/schema (GitOps).
+  # Toda a estratégia de cache/pré-agregação de queries fica aqui, nunca no Next.js.
+  cube:
+    image: cubejs/cube:latest
+    restart: unless-stopped
+    ports:
+      - "4008:4000" # host:container — 4000 é comum em outros serviços de dev
+    volumes:
+      - ./cube/schema:/cube/conf/schema
+      - ./cube/cube.js:/cube/conf/cube.js
+      - cube_store:/cube/conf/.cubestore
+    environment:
+      CUBEJS_DEV_MODE: "true"
+      CUBEJS_API_SECRET: ${CUBEJS_API_SECRET}
+      # A partir do Cube.js 0.32 o diretório padrão passou de "schema" para
+      # "model". Mantemos "schema" (montado acima) para bater com o padrão
+      # GitOps pedido: modelagem versionada em /cube/schema no repositório.
+      CUBEJS_SCHEMA_PATH: schema
+      CUBEJS_DB_TYPE: postgres
+      CUBEJS_DB_HOST: postgres
+      CUBEJS_DB_PORT: 5432
+      CUBEJS_DB_NAME: analytics
+      CUBEJS_DB_USER: bitool
+      CUBEJS_DB_PASS: bitool
+      # Cache/queue e pré-agregações materializam no Cube Store nativo (não
+      # há suporte a "redis" como cacheAndQueueDriver nesta versão do Cube.js
+      # — o Redis do compose serve à fila de Alertas do Next.js, não ao Cube).
+      CUBEJS_CACHE_AND_QUEUE_DRIVER: cubestore
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # One-off: `docker compose run --rm migrate` aplica as migrations do Prisma.
+  # Usa o estágio "builder" (node_modules completo, com a CLI do Prisma na
+  # versão travada em package.json) em vez da imagem "app" final, que é
+  # propositalmente enxuta e não inclui a CLI.
+  migrate:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: builder
+    profiles: ["tools"]
+    environment:
+      DATABASE_URL: postgresql://bitool:bitool@postgres:5432/bitool?schema=public
+    depends_on:
+      postgres:
+        condition: service_healthy
+    entrypoint: ["npx", "prisma", "migrate", "deploy"]
+
+  mailhog:
+    image: mailhog/mailhog
+    restart: unless-stopped
+    ports:
+      - "8025:8025" # Web UI
+      - "1025:1025" # SMTP
+
+  # Aplicação Next.js — única exposta ao usuário final, sempre na porta 8080.
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    ports:
+      - "8080:3000"
+    environment:
+      APP_URL: http://localhost:8080
+      NEXTAUTH_URL: http://localhost:8080
+      NEXTAUTH_SECRET: ${NEXTAUTH_SECRET}
+      DATABASE_URL: postgresql://bitool:bitool@postgres:5432/bitool?schema=public
+      CUBEJS_API_URL: http://cube:4000/cubejs-api/v1
+      CUBEJS_API_SECRET: ${CUBEJS_API_SECRET}
+      SAML_CALLBACK_URL: http://localhost:8080/api/auth/callback/saml
+      SMTP_HOST: mailhog
+      SMTP_PORT: 1025
+      SMTP_FROM: alerts@bitool.local
+      REDIS_URL: redis://redis:6379
+      CRON_SECRET: ${CRON_SECRET}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      cube:
+        condition: service_started
+      redis:
+        condition: service_healthy
+      mailhog:
+        condition: service_started
+
+volumes:
+  postgres_data:
+  redis_data:
+  cube_store:

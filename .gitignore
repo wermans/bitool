@@ -1,0 +1,22 @@
+# dependencies
+node_modules
+
+# next.js
+.next
+out
+
+# env
+.env
+.env*.local
+
+# prisma
+prisma/dev.db
+
+# cube.js
+cube/.cubestore
+
+# misc
+.DS_Store
+*.log
+npm-debug.log*
+*.tsbuildinfo

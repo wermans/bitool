@@ -1,0 +1,447 @@
+// Prisma schema — metadados da plataforma (usuários, permissões, spaces,
+// dashboards, SSO, tokens, alertas). A modelagem semântica (métricas/joins)
+// NÃO vive aqui — reside em código versionado no diretório /cube/schema.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Auth (NextAuth.js Prisma Adapter) — suporta login por credenciais e SAML
+// ---------------------------------------------------------------------------
+
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String? @db.Text
+  access_token      String? @db.Text
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String? @db.Text
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+}
+
+// ---------------------------------------------------------------------------
+// Identidade, RBAC/ABAC e Governança
+// ---------------------------------------------------------------------------
+
+enum AuthMethod {
+  CREDENTIALS
+  SAML
+}
+
+model User {
+  id                String     @id @default(cuid())
+  email             String     @unique
+  name              String?
+  passwordHash      String? // null quando login por senha está desabilitado (pós-SAML)
+  authMethod        AuthMethod @default(CREDENTIALS)
+  isActive          Boolean    @default(true)
+  isSuperAdmin      Boolean    @default(false) // break-glass local admin criado em /setup
+  emailVerified     DateTime?
+  image             String?
+
+  roleId String?
+  role   Role?   @relation(fields: [roleId], references: [id])
+
+  groups             UserGroup[]
+  attributeValues    UserAttributeValue[]
+  ownedSpaces        Space[]                @relation("SpaceOwner")
+  ownedDashboards    Dashboard[]            @relation("DashboardOwner")
+  ownedCharts        SavedChart[]           @relation("SavedChartOwner")
+  personalTokens     PersonalAccessToken[]
+  createdAlerts      Alert[]                @relation("AlertCreatedBy")
+  accounts           Account[]
+  sessions           Session[]
+  impersonationsMade ImpersonationEvent[]   @relation("ImpersonatedBy")
+  impersonationsOn   ImpersonationEvent[]   @relation("ImpersonatedTarget")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([roleId])
+}
+
+model ImpersonationEvent {
+  id String @id @default(cuid())
+
+  actorId  String
+  actor    User   @relation("ImpersonatedBy", fields: [actorId], references: [id], onDelete: Cascade)
+  targetId String
+  target   User   @relation("ImpersonatedTarget", fields: [targetId], references: [id], onDelete: Cascade)
+
+  startedAt DateTime  @default(now())
+  endedAt   DateTime?
+  reason    String?
+
+  @@index([actorId])
+  @@index([targetId])
+}
+
+model Role {
+  id          String  @id @default(cuid())
+  name        String  @unique
+  description String?
+  isSystem    Boolean @default(false) // roles nativas (Admin, Editor, Viewer) não podem ser removidas
+
+  permissions RolePermission[]
+  users       User[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// CASL-style: action (view/create/update/delete/manage) sobre subject (Space/Dashboard/SsoConfig/...)
+model Permission {
+  id          String  @id @default(cuid())
+  action      String
+  subject     String
+  description String?
+
+  roles RolePermission[]
+
+  @@unique([action, subject])
+}
+
+model RolePermission {
+  roleId       String
+  permissionId String
+
+  role       Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@id([roleId, permissionId])
+}
+
+model Group {
+  id          String @id @default(cuid())
+  name        String @unique
+  description String?
+
+  members     UserGroup[]
+  spaceAccess GroupSpaceAccess[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model UserGroup {
+  userId  String
+  groupId String
+
+  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  group Group @relation(fields: [groupId], references: [id], onDelete: Cascade)
+
+  @@id([userId, groupId])
+}
+
+// Atributos usados para RLS dinâmico (ex.: region, department) — repassados
+// ao Cube.js via SECURITY_CONTEXT em cada query.
+model UserAttribute {
+  id           String  @id @default(cuid())
+  name         String  @unique // ex: "region", "department"
+  description  String?
+  defaultValue String? // valor aplicado quando o usuário não tem override
+
+  values UserAttributeValue[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model UserAttributeValue {
+  id              String @id @default(cuid())
+  userId          String
+  userAttributeId String
+  values          String[] // suporta multi-valor (ex.: acesso a várias regiões)
+
+  user          User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userAttribute UserAttribute @relation(fields: [userAttributeId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, userAttributeId])
+}
+
+// ---------------------------------------------------------------------------
+// Projetos / Conexões de dados
+// ---------------------------------------------------------------------------
+
+model Project {
+  id          String  @id @default(cuid())
+  name        String  @unique
+  description String?
+  cubeApiUrl  String // ex: http://cube:4000/cubejs-api/v1
+  isDefault   Boolean @default(false)
+
+  spaces Space[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// ---------------------------------------------------------------------------
+// Spaces, Dashboards, Charts (Pinning + Navegação)
+// ---------------------------------------------------------------------------
+
+enum SpaceType {
+  PERSONAL
+  PUBLIC
+  PRIVATE
+}
+
+enum AccessLevel {
+  VIEW
+  EDIT
+}
+
+model Space {
+  id       String    @id @default(cuid())
+  name     String
+  type     SpaceType @default(PUBLIC)
+  isPinned Boolean   @default(false)
+  pinnedAt DateTime?
+
+  projectId String
+  project   Project @relation(fields: [projectId], references: [id])
+
+  ownerId String
+  owner   User   @relation("SpaceOwner", fields: [ownerId], references: [id])
+
+  groupAccess GroupSpaceAccess[]
+  dashboards  Dashboard[]
+  charts      SavedChart[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([projectId])
+  @@index([ownerId])
+}
+
+// Acesso de um Space PRIVATE a grupos específicos
+model GroupSpaceAccess {
+  spaceId String
+  groupId String
+  access  AccessLevel @default(VIEW)
+
+  space Space @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+  group Group @relation(fields: [groupId], references: [id], onDelete: Cascade)
+
+  @@id([spaceId, groupId])
+}
+
+model SavedChart {
+  id          String @id @default(cuid())
+  name        String
+  description String?
+  chartType   String // bar, line, pie, table, kpi...
+  cubeQuery   Json // query no formato do @cubejs-client (measures, dimensions, filters...)
+  chartConfig Json? // config visual (cores, eixos, legendas)
+  isPinned    Boolean   @default(false)
+  pinnedAt    DateTime?
+
+  spaceId String
+  space   Space  @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+
+  ownerId String
+  owner   User   @relation("SavedChartOwner", fields: [ownerId], references: [id])
+
+  widgets DashboardWidget[]
+  alerts  Alert[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([spaceId])
+}
+
+model Dashboard {
+  id          String    @id @default(cuid())
+  name        String
+  description String?
+  filters     Json? // filtros em cascata aplicados no topo do painel
+  isPinned    Boolean   @default(false)
+  pinnedAt    DateTime?
+
+  spaceId String
+  space   Space  @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+
+  ownerId String
+  owner   User   @relation("DashboardOwner", fields: [ownerId], references: [id])
+
+  widgets DashboardWidget[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([spaceId])
+}
+
+// Item posicionado no grid (react-grid-layout) apontando para um SavedChart
+model DashboardWidget {
+  id     String @id @default(cuid())
+  title  String?
+  type   String  @default("chart") // chart | text | image
+  config Json? // conteúdo livre para widgets do tipo "text"
+
+  // layout do react-grid-layout
+  x      Int @default(0)
+  y      Int @default(0)
+  w      Int @default(6)
+  h      Int @default(4)
+
+  dashboardId String
+  dashboard   Dashboard @relation(fields: [dashboardId], references: [id], onDelete: Cascade)
+
+  savedChartId String?
+  savedChart   SavedChart? @relation(fields: [savedChartId], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([dashboardId])
+}
+
+// ---------------------------------------------------------------------------
+// Admin: SSO/SAML, PATs, Service Accounts
+// ---------------------------------------------------------------------------
+
+enum SsoProvider {
+  SAML_ENTRA_ID
+  SAML_OKTA
+  SAML_GENERIC
+}
+
+model SsoConfig {
+  id     String      @id @default(cuid())
+  provider SsoProvider
+
+  entityId          String
+  ssoLoginUrl       String
+  ssoLogoutUrl      String?
+  certificate       String  @db.Text
+  metadataUrl       String?
+  attributeMapping  Json? // ex: { email: "mail", name: "displayName" }
+
+  isEnabled             Boolean @default(false)
+  disablePasswordLogin  Boolean @default(false) // mantém break-glass via isSuperAdmin
+  allowedDomains        String[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model PersonalAccessToken {
+  id         String    @id @default(cuid())
+  name       String
+  tokenHash  String    @unique
+  lastUsedAt DateTime?
+  expiresAt  DateTime?
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+}
+
+model ServiceAccount {
+  id          String    @id @default(cuid())
+  name        String    @unique
+  description String?
+  tokenHash   String    @unique
+  isActive    Boolean   @default(true)
+  expiresAt   DateTime?
+
+  roleId String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// ---------------------------------------------------------------------------
+// Alertas
+// ---------------------------------------------------------------------------
+
+enum AlertOperator {
+  GREATER_THAN
+  LESS_THAN
+  EQUALS
+  NOT_EQUALS
+}
+
+enum AlertStatus {
+  OK
+  TRIGGERED
+  ERROR
+}
+
+model Alert {
+  id            String        @id @default(cuid())
+  name          String
+  operator      AlertOperator
+  threshold     Float
+  frequencyCron String        @default("*/15 * * * *")
+  recipients    String[] // e-mails destinatários (enviados via Mailhog em dev)
+  isEnabled     Boolean       @default(true)
+
+  lastStatus      AlertStatus @default(OK)
+  lastCheckedAt   DateTime?
+  lastTriggeredAt DateTime?
+
+  savedChartId String
+  savedChart   SavedChart @relation(fields: [savedChartId], references: [id], onDelete: Cascade)
+
+  createdById String
+  createdBy   User   @relation("AlertCreatedBy", fields: [createdById], references: [id])
+
+  history AlertHistory[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([savedChartId])
+}
+
+model AlertHistory {
+  id          String      @id @default(cuid())
+  alertId     String
+  alert       Alert       @relation(fields: [alertId], references: [id], onDelete: Cascade)
+  status      AlertStatus
+  value       Float
+  message     String?
+  notifiedTo  String[]
+  triggeredAt DateTime    @default(now())
+
+  @@index([alertId])
+}
