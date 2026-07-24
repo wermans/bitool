@@ -2,18 +2,23 @@
 
 import { useEffect, useState } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
+import { AnimatePresence, motion } from "framer-motion";
 import { CubeChart } from "@/components/cube-chart";
-import type { ChartType, CubeQuery } from "@/lib/cube-types";
+import { ChartTypeToggle } from "@/components/chart-type-toggle";
+import { ChartConfigPanel } from "@/components/chart-config-panel";
+import { useToast } from "@/components/toast";
+import { FieldPicker, type CubeMeta } from "./field-picker";
+import { TableCalcEditor } from "./table-calc-editor";
+import { MergeConfigEditor } from "./merge-config-editor";
+import type { ChartConfig, ChartType, CubeQuery, MergeConfig } from "@/lib/cube-types";
+import type { TableCalc } from "@/lib/table-calculations";
 
-type CubeMember = { name: string; title: string };
-type CubeMeta = { name: string; title: string; measures: CubeMember[]; dimensions: CubeMember[] };
 type Space = { id: string; name: string };
-
-const CHART_TYPES: ChartType[] = ["table", "bar", "line", "pie", "kpi"];
 
 export function ExplorerClient() {
   const searchParams = useSearchParams();
   const router = useRouter();
+  const toast = useToast();
   const spaceIdParam = searchParams.get("spaceId");
   const chartIdParam = searchParams.get("chartId");
 
@@ -21,11 +26,11 @@ export function ExplorerClient() {
   const [selectedMeasures, setSelectedMeasures] = useState<string[]>([]);
   const [selectedDimensions, setSelectedDimensions] = useState<string[]>([]);
   const [chartType, setChartType] = useState<ChartType>("table");
+  const [chartConfig, setChartConfig] = useState<ChartConfig>({});
   const [chartName, setChartName] = useState("Novo gráfico");
   const [spaceId, setSpaceId] = useState(spaceIdParam ?? "");
   const [spaces, setSpaces] = useState<Space[]>([]);
   const [editingChartId, setEditingChartId] = useState<string | null>(chartIdParam);
-  const [saveMessage, setSaveMessage] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
@@ -47,6 +52,7 @@ export function ExplorerClient() {
         setSelectedMeasures(q.measures ?? []);
         setSelectedDimensions(q.dimensions ?? []);
         setChartType(chart.chartType);
+        setChartConfig((chart.chartConfig as ChartConfig) ?? {});
         setChartName(chart.name);
         setSpaceId(chart.spaceId);
         setEditingChartId(chart.id);
@@ -72,14 +78,8 @@ export function ExplorerClient() {
   async function handleSave() {
     if (!query || !spaceId) return;
     setSaving(true);
-    setSaveMessage(null);
 
-    const payload = {
-      name: chartName,
-      spaceId,
-      chartType,
-      cubeQuery: query,
-    };
+    const payload = { name: chartName, spaceId, chartType, cubeQuery: query, chartConfig };
 
     const res = editingChartId
       ? await fetch(`/api/charts/${editingChartId}`, {
@@ -96,79 +96,82 @@ export function ExplorerClient() {
     setSaving(false);
     if (!res.ok) {
       const data = await res.json().catch(() => ({}));
-      setSaveMessage(typeof data.error === "string" ? data.error : "Erro ao salvar.");
+      toast({
+        title: "Erro ao salvar gráfico",
+        description: typeof data.error === "string" ? data.error : undefined,
+        variant: "error",
+      });
       return;
     }
     const saved = await res.json();
     setEditingChartId(saved.id);
-    setSaveMessage("Gráfico salvo.");
+    toast({
+      title: editingChartId ? "Gráfico atualizado" : "Gráfico salvo",
+      description: chartName,
+      variant: "success",
+    });
     router.push(`/explore?chartId=${saved.id}`);
   }
 
   return (
-    <div className="grid gap-6 lg:grid-cols-[280px_1fr]">
-      <aside className="space-y-4">
-        {cubes.map((cube) => (
-          <div key={cube.name} className="rounded-md border border-border p-3">
-            <h3 className="mb-2 text-sm font-semibold">{cube.title}</h3>
-            <div className="space-y-1">
-              <p className="text-xs font-medium text-muted-foreground">Measures</p>
-              {cube.measures.map((m) => (
-                <label key={m.name} className="flex items-center gap-2 text-sm">
-                  <input
-                    type="checkbox"
-                    checked={selectedMeasures.includes(m.name)}
-                    onChange={() => toggleMeasure(m.name)}
-                  />
-                  {m.title}
-                </label>
-              ))}
-              <p className="mt-2 text-xs font-medium text-muted-foreground">
-                Dimensions
-              </p>
-              {cube.dimensions.map((d) => (
-                <label key={d.name} className="flex items-center gap-2 text-sm">
-                  <input
-                    type="checkbox"
-                    checked={selectedDimensions.includes(d.name)}
-                    onChange={() => toggleDimension(d.name)}
-                  />
-                  {d.title}
-                </label>
-              ))}
-            </div>
-          </div>
-        ))}
-        {cubes.length === 0 && (
-          <p className="text-sm text-muted-foreground">Carregando cubes...</p>
-        )}
+    <div className="grid gap-6 lg:grid-cols-[300px_1fr]">
+      <aside>
+        <FieldPicker
+          cubes={cubes}
+          selectedMeasures={selectedMeasures}
+          selectedDimensions={selectedDimensions}
+          onToggleMeasure={toggleMeasure}
+          onToggleDimension={toggleDimension}
+        />
       </aside>
 
       <div className="space-y-4">
-        <div className="flex flex-wrap items-center gap-2">
-          {CHART_TYPES.map((t) => (
-            <button
-              key={t}
-              onClick={() => setChartType(t)}
-              className={`rounded-md border px-3 py-1.5 text-sm ${
-                chartType === t
-                  ? "border-primary bg-primary text-primary-foreground"
-                  : "border-border"
-              }`}
-            >
-              {t}
-            </button>
-          ))}
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <ChartTypeToggle value={chartType} onChange={setChartType} />
+          <ChartConfigPanel chartType={chartType} config={chartConfig} onChange={setChartConfig} />
         </div>
 
+        <TableCalcEditor
+          measures={selectedMeasures}
+          calcs={chartConfig.tableCalculations ?? []}
+          onChange={(tableCalculations: TableCalc[]) =>
+            setChartConfig((prev) => ({ ...prev, tableCalculations }))
+          }
+        />
+
+        <MergeConfigEditor
+          ownDimensions={selectedDimensions}
+          merge={chartConfig.merge}
+          onChange={(merge: MergeConfig | undefined) =>
+            setChartConfig((prev) => ({ ...prev, merge }))
+          }
+          excludeChartId={editingChartId ?? undefined}
+        />
+
         <div className="rounded-md border border-border p-4">
-          {query ? (
-            <CubeChart query={query} chartType={chartType} height={360} />
-          ) : (
-            <p className="py-16 text-center text-sm text-muted-foreground">
-              Selecione ao menos uma measure ou dimension.
-            </p>
-          )}
+          <AnimatePresence mode="wait">
+            {query ? (
+              <motion.div
+                key={chartType + JSON.stringify(query)}
+                initial={{ opacity: 0, y: 6 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -6 }}
+                transition={{ duration: 0.18 }}
+              >
+                <CubeChart query={query} chartType={chartType} config={chartConfig} height={360} />
+              </motion.div>
+            ) : (
+              <motion.p
+                key="empty"
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                className="py-16 text-center text-sm text-muted-foreground"
+              >
+                Selecione ao menos uma measure ou dimension.
+              </motion.p>
+            )}
+          </AnimatePresence>
         </div>
 
         <div className="flex flex-wrap items-end gap-2 rounded-md border border-border p-4">
@@ -202,7 +205,6 @@ export function ExplorerClient() {
           >
             {saving ? "Salvando..." : editingChartId ? "Atualizar gráfico" : "Salvar como gráfico"}
           </button>
-          {saveMessage && <p className="text-sm">{saveMessage}</p>}
         </div>
       </div>
     </div>

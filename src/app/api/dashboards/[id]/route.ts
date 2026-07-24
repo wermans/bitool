@@ -8,10 +8,28 @@ import { canViewSpace, canEditSpace } from "@/lib/space-access";
 
 export const dynamic = "force-dynamic";
 
+const uiFilterSchema = z.object({
+  id: z.string(),
+  member: z.string(),
+  operator: z.string(),
+  values: z.array(z.string()),
+});
+
+const filterStateSchema = z.object({
+  logic: z.enum(["and", "or"]),
+  groups: z.array(
+    z.object({
+      id: z.string(),
+      logic: z.enum(["and", "or"]),
+      filters: z.array(uiFilterSchema),
+    })
+  ),
+});
+
 const schema = z.object({
   name: z.string().min(1).optional(),
   description: z.string().nullable().optional(),
-  filters: z.array(z.record(z.string(), z.unknown())).optional(),
+  filters: filterStateSchema.optional(),
   isPinned: z.boolean().optional(),
 });
 

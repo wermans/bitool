@@ -2,6 +2,8 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
+import { AnimatePresence, motion } from "framer-motion";
+import { useToast } from "@/components/toast";
 
 type HistoryItem = {
   id: string;
@@ -51,6 +53,7 @@ export function AlertsClient({
   charts: Chart[];
 }) {
   const router = useRouter();
+  const toast = useToast();
   const [alerts, setAlerts] = useState(initialAlerts);
   const [showCreate, setShowCreate] = useState(false);
   const [expandedId, setExpandedId] = useState<string | null>(null);
@@ -63,13 +66,20 @@ export function AlertsClient({
     });
     if (res.ok) {
       setAlerts((prev) => prev.map((a) => (a.id === id ? { ...a, isEnabled } : a)));
+    } else {
+      toast({ title: "Não foi possível atualizar o alerta", variant: "error" });
     }
   }
 
   async function remove(id: string) {
     if (!confirm("Remover este alerta?")) return;
     const res = await fetch(`/api/alerts/${id}`, { method: "DELETE" });
-    if (res.ok) setAlerts((prev) => prev.filter((a) => a.id !== id));
+    if (res.ok) {
+      setAlerts((prev) => prev.filter((a) => a.id !== id));
+      toast({ title: "Alerta removido", variant: "success" });
+    } else {
+      toast({ title: "Não foi possível remover o alerta", variant: "error" });
+    }
   }
 
   return (
@@ -95,8 +105,17 @@ export function AlertsClient({
       )}
 
       <div className="space-y-3">
+        <AnimatePresence initial={false}>
         {alerts.map((a) => (
-          <div key={a.id} className="rounded-md border border-border p-4">
+          <motion.div
+            key={a.id}
+            layout
+            initial={{ opacity: 0, y: -8 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, scale: 0.97 }}
+            transition={{ duration: 0.2 }}
+            className="rounded-md border border-border p-4"
+          >
             <div className="flex items-center justify-between">
               <div>
                 <div className="flex items-center gap-2">
@@ -134,28 +153,39 @@ export function AlertsClient({
               </div>
             </div>
 
-            {expandedId === a.id && (
-              <div className="mt-3 border-t border-border pt-3">
-                {a.history.length === 0 ? (
-                  <p className="text-xs text-muted-foreground">
-                    Sem disparos registrados ainda.
-                  </p>
-                ) : (
-                  <ul className="space-y-1 text-xs">
-                    {a.history.map((h) => (
-                      <li key={h.id}>
-                        <span className={`rounded px-1.5 py-0.5 ${STATUS_STYLES[h.status]}`}>
-                          {h.status}
-                        </span>{" "}
-                        {new Date(h.triggeredAt).toLocaleString("pt-BR")} — {h.message}
-                      </li>
-                    ))}
-                  </ul>
-                )}
-              </div>
-            )}
-          </div>
+            <AnimatePresence initial={false}>
+              {expandedId === a.id && (
+                <motion.div
+                  initial={{ opacity: 0, height: 0 }}
+                  animate={{ opacity: 1, height: "auto" }}
+                  exit={{ opacity: 0, height: 0 }}
+                  transition={{ duration: 0.2 }}
+                  className="overflow-hidden"
+                >
+                  <div className="mt-3 border-t border-border pt-3">
+                    {a.history.length === 0 ? (
+                      <p className="text-xs text-muted-foreground">
+                        Sem disparos registrados ainda.
+                      </p>
+                    ) : (
+                      <ul className="space-y-1 text-xs">
+                        {a.history.map((h) => (
+                          <li key={h.id}>
+                            <span className={`rounded px-1.5 py-0.5 ${STATUS_STYLES[h.status]}`}>
+                              {h.status}
+                            </span>{" "}
+                            {new Date(h.triggeredAt).toLocaleString("pt-BR")} — {h.message}
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
+          </motion.div>
         ))}
+        </AnimatePresence>
         {alerts.length === 0 && (
           <p className="text-sm text-muted-foreground">Nenhum alerta configurado ainda.</p>
         )}
@@ -171,19 +201,18 @@ function CreateAlertForm({
   charts: Chart[];
   onCreated: (alert: Omit<AlertRow, "history">) => void;
 }) {
+  const toast = useToast();
   const [name, setName] = useState("");
   const [savedChartId, setSavedChartId] = useState("");
   const [operator, setOperator] = useState<AlertRow["operator"]>("LESS_THAN");
   const [threshold, setThreshold] = useState("");
   const [recipients, setRecipients] = useState("");
   const [frequencyCron, setFrequencyCron] = useState("*/15 * * * *");
-  const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setLoading(true);
-    setError(null);
 
     const res = await fetch("/api/alerts", {
       method: "POST",
@@ -200,11 +229,16 @@ function CreateAlertForm({
     setLoading(false);
     if (!res.ok) {
       const data = await res.json().catch(() => ({}));
-      setError(typeof data.error === "string" ? data.error : "Erro ao criar alerta.");
+      toast({
+        title: "Erro ao criar alerta",
+        description: typeof data.error === "string" ? data.error : undefined,
+        variant: "error",
+      });
       return;
     }
     const alert = await res.json();
     const chart = charts.find((c) => c.id === savedChartId);
+    toast({ title: "Alerta criado", description: name, variant: "success" });
     onCreated({
       id: alert.id,
       name: alert.name,
@@ -274,7 +308,6 @@ function CreateAlertForm({
         placeholder="Expressão cron (ex: */15 * * * *)"
         className="rounded-md border border-border bg-background px-3 py-2 text-sm sm:col-span-2"
       />
-      {error && <p className="text-sm text-red-600 sm:col-span-2">{error}</p>}
       <button
         type="submit"
         disabled={loading}
