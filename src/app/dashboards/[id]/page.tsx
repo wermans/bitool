@@ -3,6 +3,8 @@ import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { canViewSpace, canEditSpace } from "@/lib/space-access";
+import { normalizeFilterState } from "@/lib/filter-groups";
+import type { ChartConfig } from "@/lib/cube-types";
 import { DashboardClient } from "./dashboard-client";
 
 export const dynamic = "force-dynamic";
@@ -37,7 +39,7 @@ export default async function DashboardPage({
       <DashboardClient
         dashboardId={dashboard.id}
         canEdit={canEdit}
-        initialFilters={(dashboard.filters as { member: string; operator: string; values: string[] }[]) ?? []}
+        initialFilters={normalizeFilterState(dashboard.filters)}
         widgets={dashboard.widgets.map((w) => ({
           id: w.id,
           title: w.title,
@@ -55,6 +57,7 @@ export default async function DashboardPage({
                   dimensions: string[];
                   timeDimensions?: { dimension: string; granularity?: string }[];
                 },
+                chartConfig: (w.savedChart.chartConfig as ChartConfig) ?? {},
               }
             : null,
         }))}

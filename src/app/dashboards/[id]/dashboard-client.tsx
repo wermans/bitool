@@ -4,9 +4,11 @@ import { useEffect, useMemo, useState } from "react";
 import GridLayout, { WidthProvider } from "react-grid-layout";
 import "react-grid-layout/css/styles.css";
 import "react-resizable/css/styles.css";
+import { AnimatePresence, motion } from "framer-motion";
 import { CubeChart } from "@/components/cube-chart";
-import { CascadingFilterBar } from "./cascading-filter-bar";
-import type { CubeFilter, CubeQuery, ChartType } from "@/lib/cube-types";
+import { FilterGroupsEditor } from "./filter-groups-editor";
+import { toCubeFilters, type FilterState } from "@/lib/filter-groups";
+import type { ChartConfig, CubeFilter, CubeQuery, ChartType } from "@/lib/cube-types";
 
 const Grid = WidthProvider(GridLayout);
 
@@ -15,6 +17,7 @@ type SavedChartRef = {
   name: string;
   chartType: string;
   cubeQuery: { measures: string[]; dimensions: string[]; timeDimensions?: { dimension: string; granularity?: string }[] };
+  chartConfig?: ChartConfig;
 };
 
 type Widget = {
@@ -36,13 +39,13 @@ export function DashboardClient({
 }: {
   dashboardId: string;
   canEdit: boolean;
-  initialFilters: CubeFilter[];
+  initialFilters: FilterState;
   widgets: Widget[];
   availableCharts: { id: string; name: string }[];
 }) {
   const [widgets, setWidgets] = useState(initialWidgets);
   const [editMode, setEditMode] = useState(false);
-  const [filters, setFilters] = useState<CubeFilter[]>(initialFilters);
+  const [filterState, setFilterState] = useState<FilterState>(initialFilters);
   const [crossFilter, setCrossFilter] = useState<CubeFilter | null>(null);
   const [showAddWidget, setShowAddWidget] = useState(false);
   const [savingFilters, setSavingFilters] = useState(false);
@@ -58,8 +61,8 @@ export function DashboardClient({
   }, []);
 
   const activeFilters = useMemo(
-    () => [...filters, ...(crossFilter ? [crossFilter] : [])],
-    [filters, crossFilter]
+    () => [...toCubeFilters(filterState), ...(crossFilter ? [crossFilter] : [])],
+    [filterState, crossFilter]
   );
 
   function buildQuery(chart: SavedChartRef): CubeQuery {
@@ -116,32 +119,40 @@ export function DashboardClient({
     await fetch(`/api/dashboards/${dashboardId}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ filters }),
+      body: JSON.stringify({ filters: filterState }),
     });
     setSavingFilters(false);
   }
 
   return (
     <div className="space-y-4">
-      <CascadingFilterBar
-        filters={filters}
-        setFilters={setFilters}
+      <FilterGroupsEditor
+        state={filterState}
+        onChange={setFilterState}
         canEdit={canEdit}
         onSave={saveFilters}
         saving={savingFilters}
         dimensions={dimensions}
       />
 
-      {crossFilter && (
-        <div className="flex items-center gap-2 text-sm">
-          <span className="rounded-full bg-primary/10 px-3 py-1">
-            Cross-filter: {crossFilter.member} = {crossFilter.values[0]}
-          </span>
-          <button onClick={() => setCrossFilter(null)} className="underline">
-            limpar
-          </button>
-        </div>
-      )}
+      <AnimatePresence>
+        {crossFilter && (
+          <motion.div
+            initial={{ opacity: 0, height: 0 }}
+            animate={{ opacity: 1, height: "auto" }}
+            exit={{ opacity: 0, height: 0 }}
+            transition={{ duration: 0.2 }}
+            className="flex items-center gap-2 overflow-hidden text-sm"
+          >
+            <span className="rounded-full bg-primary/10 px-3 py-1">
+              Cross-filter: {crossFilter.member} = {crossFilter.values[0]}
+            </span>
+            <button onClick={() => setCrossFilter(null)} className="underline">
+              limpar
+            </button>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {canEdit && (
         <div className="flex gap-2">
@@ -214,6 +225,7 @@ export function DashboardClient({
                 <CubeChart
                   query={buildQuery(w.savedChart)}
                   chartType={w.savedChart.chartType as ChartType}
+                  config={w.savedChart.chartConfig}
                   height={200}
                   onPointClick={(member, value) =>
                     setCrossFilter({ member, operator: "equals", values: [value] })
