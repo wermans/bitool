@@ -48,8 +48,10 @@ export function FilterGroupsEditor({
   state: FilterState;
   onChange: (s: FilterState) => void;
   canEdit: boolean;
-  onSave: () => void;
-  saving: boolean;
+  /** Omitido quando o "salvar" é feito por fora (ex.: Explorer, onde os
+   * filtros vão junto com o resto da query no botão de salvar geral). */
+  onSave?: () => void;
+  saving?: boolean;
   dimensions: DimensionOption[];
 }) {
   function updateGroup(groupId: string, patch: Partial<FilterGroup>) {
@@ -118,13 +120,15 @@ export function FilterGroupsEditor({
           >
             + grupo de filtros
           </button>
-          <button
-            onClick={onSave}
-            disabled={saving || !complete}
-            className="rounded-md bg-primary px-2 py-1 text-xs font-medium text-primary-foreground disabled:opacity-50"
-          >
-            {saving ? "Salvando..." : "Salvar filtros"}
-          </button>
+          {onSave && (
+            <button
+              onClick={onSave}
+              disabled={saving || !complete}
+              className="rounded-md bg-primary px-2 py-1 text-xs font-medium text-primary-foreground disabled:opacity-50"
+            >
+              {saving ? "Salvando..." : "Salvar filtros"}
+            </button>
+          )}
         </div>
       )}
     </div>

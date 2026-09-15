@@ -1,11 +1,18 @@
 "use client";
 
 import * as ToastPrimitive from "@radix-ui/react-toast";
+import Link from "next/link";
 import { createContext, useCallback, useContext, useState } from "react";
 
 type ToastVariant = "default" | "success" | "error";
+type ToastAction = { label: string; href: string };
 
-type ToastInput = { title: string; description?: string; variant?: ToastVariant };
+type ToastInput = {
+  title: string;
+  description?: string;
+  variant?: ToastVariant;
+  action?: ToastAction;
+};
 type ToastItem = ToastInput & { id: number };
 
 const ToastContext = createContext<((t: ToastInput) => void) | null>(null);
@@ -41,6 +48,7 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
         {items.map((item) => (
           <ToastPrimitive.Root
             key={item.id}
+            duration={item.action ? Infinity : undefined}
             onOpenChange={(open) => !open && remove(item.id)}
             className={`data-[state=open]:animate-in data-[state=closed]:animate-out data-[swipe=end]:animate-out data-[state=closed]:fade-out-80 data-[state=open]:slide-in-from-bottom-2 data-[state=closed]:slide-out-to-right-full pointer-events-auto grid grid-cols-[1fr_auto] items-start gap-x-3 rounded-lg border p-4 shadow-lg ${VARIANT_STYLES[item.variant ?? "default"]}`}
           >
@@ -52,6 +60,13 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
                 <ToastPrimitive.Description className="text-xs opacity-80">
                   {item.description}
                 </ToastPrimitive.Description>
+              )}
+              {item.action && (
+                <ToastPrimitive.Action asChild altText={item.action.label}>
+                  <Link href={item.action.href} className="text-xs font-medium underline underline-offset-2">
+                    {item.action.label}
+                  </Link>
+                </ToastPrimitive.Action>
               )}
             </div>
             <ToastPrimitive.Close

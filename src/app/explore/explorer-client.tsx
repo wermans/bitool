@@ -1,17 +1,22 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
-import { AnimatePresence, motion } from "framer-motion";
-import { CubeChart } from "@/components/cube-chart";
-import { ChartTypeToggle } from "@/components/chart-type-toggle";
-import { ChartConfigPanel } from "@/components/chart-config-panel";
+import { motion } from "framer-motion";
 import { useToast } from "@/components/toast";
+import { useManualQuery } from "@/hooks/use-manual-query";
+import { validateFieldsForChartType } from "@/lib/chart-transform";
+import { buildCsv, downloadCsv } from "@/lib/csv-export";
+import { TopBar } from "./top-bar";
+import { ActionsMenu } from "./actions-menu";
+import { SaveDialog } from "./save-dialog";
+import { CombineResultsDialog } from "./combine-results-dialog";
 import { FieldPicker, type CubeMeta } from "./field-picker";
-import { TableCalcEditor } from "./table-calc-editor";
-import { MergeConfigEditor } from "./merge-config-editor";
-import type { ChartConfig, ChartType, CubeQuery, MergeConfig } from "@/lib/cube-types";
-import type { TableCalc } from "@/lib/table-calculations";
+import { FiltersSection } from "./filters-section";
+import { VisualizationSection } from "./visualization-section";
+import { DataSection, type DataTab } from "./data-section";
+import { emptyFilterState, newFilter, newGroup, normalizeFilterState, toCubeFilters } from "@/lib/filter-groups";
+import type { ChartConfig, ChartType, CubeQuery } from "@/lib/cube-types";
 
 type Space = { id: string; name: string };
 
@@ -32,6 +37,15 @@ export function ExplorerClient() {
   const [spaces, setSpaces] = useState<Space[]>([]);
   const [editingChartId, setEditingChartId] = useState<string | null>(chartIdParam);
   const [saving, setSaving] = useState(false);
+  const [leftPanelCollapsed, setLeftPanelCollapsed] = useState(false);
+
+  // Fase 6: Salvar e Combinar resultados viraram modais abertos pelo menu
+  // ⚙ Ações; Data (tab/aberta) também é controlada daqui pra "Obter SQL"
+  // poder forçar a seção aberta na aba certa.
+  const [saveDialogOpen, setSaveDialogOpen] = useState(false);
+  const [combineDialogOpen, setCombineDialogOpen] = useState(false);
+  const [dataSectionOpen, setDataSectionOpen] = useState(true);
+  const [dataTab, setDataTab] = useState<DataTab>("results");
 
   useEffect(() => {
     fetch("/api/cube/meta")
@@ -52,12 +66,22 @@ export function ExplorerClient() {
         setSelectedMeasures(q.measures ?? []);
         setSelectedDimensions(q.dimensions ?? []);
         setChartType(chart.chartType);
-        setChartConfig((chart.chartConfig as ChartConfig) ?? {});
+        const loadedConfig = (chart.chartConfig as ChartConfig) ?? {};
+        setChartConfig({
+          ...loadedConfig,
+          filterState: normalizeFilterState(loadedConfig.filterState),
+        });
         setChartName(chart.name);
         setSpaceId(chart.spaceId);
         setEditingChartId(chart.id);
       });
   }, [chartIdParam]);
+
+  const allDimensions = useMemo(
+    () => cubes.flatMap((c) => c.dimensions.map((d) => ({ name: d.name, title: d.title }))),
+    [cubes]
+  );
+  const filterState = chartConfig.filterState ?? emptyFilterState();
 
   function toggleMeasure(name: string) {
     setSelectedMeasures((prev) =>
@@ -70,10 +94,65 @@ export function ExplorerClient() {
     );
   }
 
+  function isFieldFilterActive(name: string) {
+    return filterState.groups.some((g) => g.filters.some((f) => f.member === name));
+  }
+
+  // Ícone de funil no hover do campo (spec 2.5/3) — liga/desliga o campo
+  // como filtro. Adiciona no primeiro grupo existente (ou cria um) quando
+  // ativa; remove todas as ocorrências do campo quando desativa.
+  function toggleFieldFilter(name: string) {
+    setChartConfig((prev) => {
+      const state = prev.filterState ?? emptyFilterState();
+      if (isFieldFilterActive(name)) {
+        const groups = state.groups
+          .map((g) => ({ ...g, filters: g.filters.filter((f) => f.member !== name) }))
+          .filter((g) => g.filters.length > 0);
+        return { ...prev, filterState: { ...state, groups } };
+      }
+      const filter = { ...newFilter(), member: name };
+      const groups =
+        state.groups.length === 0
+          ? [{ ...newGroup(), filters: [filter] }]
+          : state.groups.map((g, i) => (i === 0 ? { ...g, filters: [...g.filters, filter] } : g));
+      return { ...prev, filterState: { ...state, groups } };
+    });
+  }
+
+  const rowLimit = chartConfig.rowLimit ?? 500;
+
   const query: CubeQuery | null =
     selectedMeasures.length > 0 || selectedDimensions.length > 0
-      ? { measures: selectedMeasures, dimensions: selectedDimensions, limit: 500 }
+      ? {
+          measures: selectedMeasures,
+          dimensions: selectedDimensions,
+          filters: toCubeFilters(filterState),
+          limit: rowLimit,
+        }
       : null;
+
+  // Run manual (spec 7.1): nada busca sozinho — só o clique em Run, via
+  // useManualQuery. `executedQuery` é o snapshot da última query rodada, e é
+  // isso que Visualization/Data-Results devem exibir, não a `query` ao vivo
+  // (que pode já estar *stale* por causa de campos/filtros mudados depois).
+  const {
+    data,
+    loading,
+    error,
+    stale,
+    executedQuery,
+    lastRunAt,
+    execTimeMs,
+    cacheHit,
+    run,
+    stop,
+  } = useManualQuery(query, chartConfig.merge);
+
+  const validationError = executedQuery
+    ? chartConfig.merge
+      ? null
+      : validateFieldsForChartType(chartType, executedQuery.measures, executedQuery.dimensions)
+    : null;
 
   async function handleSave() {
     if (!query || !spaceId) return;
@@ -105,108 +184,153 @@ export function ExplorerClient() {
     }
     const saved = await res.json();
     setEditingChartId(saved.id);
+    setSaveDialogOpen(false);
+    const spaceName = spaces.find((s) => s.id === spaceId)?.name ?? "";
     toast({
-      title: editingChartId ? "Gráfico atualizado" : "Gráfico salvo",
-      description: chartName,
+      title: `"${chartName}" foi ${editingChartId ? "atualizado" : "salvo"} no Space "${spaceName}"`,
       variant: "success",
+      action: { label: "Ver Space", href: `/spaces/${spaceId}` },
     });
     router.push(`/explore?chartId=${saved.id}`);
   }
 
+  function handleDownloadCsv() {
+    if (!executedQuery || data.length === 0) return;
+    const csv = buildCsv(data, executedQuery, Boolean(chartConfig.merge));
+    downloadCsv(`${chartName || "resultados"}.csv`, csv);
+  }
+
+  function handleGetSql() {
+    setDataSectionOpen(true);
+    setDataTab("sql");
+  }
+
+  function handleClearFieldsAndFilters() {
+    setSelectedMeasures([]);
+    setSelectedDimensions([]);
+    setChartConfig((prev) => ({ ...prev, filterState: emptyFilterState() }));
+  }
+
   return (
-    <div className="grid gap-6 lg:grid-cols-[300px_1fr]">
-      <aside>
-        <FieldPicker
-          cubes={cubes}
-          selectedMeasures={selectedMeasures}
-          selectedDimensions={selectedDimensions}
-          onToggleMeasure={toggleMeasure}
-          onToggleDimension={toggleDimension}
-        />
-      </aside>
+    <div className="space-y-4">
+      <TopBar
+        rowCount={executedQuery ? data.length : undefined}
+        execTimeMs={executedQuery ? execTimeMs ?? undefined : undefined}
+        lastRunAt={lastRunAt}
+        cacheHit={cacheHit}
+        stale={stale}
+        running={loading}
+        canRun={Boolean(query)}
+        onRun={run}
+        onStop={stop}
+        actionsMenu={
+          <ActionsMenu
+            onSave={() => setSaveDialogOpen(true)}
+            canSave={Boolean(query)}
+            onDownloadCsv={handleDownloadCsv}
+            canDownload={Boolean(executedQuery && data.length > 0)}
+            onGetSql={handleGetSql}
+            canGetSql={Boolean(query)}
+            onCombineResults={() => setCombineDialogOpen(true)}
+            canCombineResults={selectedDimensions.length > 0}
+            onClearFieldsAndFilters={handleClearFieldsAndFilters}
+            canClearFieldsAndFilters={Boolean(query) || filterState.groups.length > 0}
+            onClearCacheAndRefresh={run}
+            canClearCacheAndRefresh={Boolean(query)}
+          />
+        }
+      />
 
-      <div className="space-y-4">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <ChartTypeToggle value={chartType} onChange={setChartType} />
-          <ChartConfigPanel chartType={chartType} config={chartConfig} onChange={setChartConfig} />
-        </div>
-
-        <TableCalcEditor
-          measures={selectedMeasures}
-          calcs={chartConfig.tableCalculations ?? []}
-          onChange={(tableCalculations: TableCalc[]) =>
-            setChartConfig((prev) => ({ ...prev, tableCalculations }))
-          }
-        />
-
-        <MergeConfigEditor
-          ownDimensions={selectedDimensions}
-          merge={chartConfig.merge}
-          onChange={(merge: MergeConfig | undefined) =>
-            setChartConfig((prev) => ({ ...prev, merge }))
-          }
-          excludeChartId={editingChartId ?? undefined}
-        />
-
-        <div className="rounded-md border border-border p-4">
-          <AnimatePresence mode="wait">
-            {query ? (
-              <motion.div
-                key={chartType + JSON.stringify(query)}
-                initial={{ opacity: 0, y: 6 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -6 }}
-                transition={{ duration: 0.18 }}
-              >
-                <CubeChart query={query} chartType={chartType} config={chartConfig} height={360} />
-              </motion.div>
-            ) : (
-              <motion.p
-                key="empty"
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                exit={{ opacity: 0 }}
-                className="py-16 text-center text-sm text-muted-foreground"
-              >
-                Selecione ao menos uma measure ou dimension.
-              </motion.p>
-            )}
-          </AnimatePresence>
-        </div>
-
-        <div className="flex flex-wrap items-end gap-2 rounded-md border border-border p-4">
-          <div className="space-y-1">
-            <label className="text-xs font-medium">Nome do gráfico</label>
-            <input
-              value={chartName}
-              onChange={(e) => setChartName(e.target.value)}
-              className="rounded-md border border-border bg-background px-3 py-2 text-sm"
+      <div className="flex items-start gap-4">
+        <motion.div
+          initial={false}
+          animate={{ width: leftPanelCollapsed ? 0 : 320, opacity: leftPanelCollapsed ? 0 : 1 }}
+          transition={{ duration: 0.15 }}
+          className="shrink-0 overflow-hidden"
+        >
+          <div className="w-80">
+            <FieldPicker
+              cubes={cubes}
+              selectedMeasures={selectedMeasures}
+              selectedDimensions={selectedDimensions}
+              onToggleMeasure={toggleMeasure}
+              onToggleDimension={toggleDimension}
+              onCollapse={() => setLeftPanelCollapsed(true)}
+              isFieldFilterActive={isFieldFilterActive}
+              onToggleFieldFilter={toggleFieldFilter}
             />
           </div>
-          <div className="space-y-1">
-            <label className="text-xs font-medium">Space</label>
-            <select
-              value={spaceId}
-              onChange={(e) => setSpaceId(e.target.value)}
-              className="rounded-md border border-border bg-background px-3 py-2 text-sm"
-            >
-              <option value="">Selecione...</option>
-              {spaces.map((s) => (
-                <option key={s.id} value={s.id}>
-                  {s.name}
-                </option>
-              ))}
-            </select>
-          </div>
+        </motion.div>
+
+        {leftPanelCollapsed && (
           <button
-            onClick={handleSave}
-            disabled={!query || !spaceId || saving}
-            className="rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground disabled:opacity-50"
+            onClick={() => setLeftPanelCollapsed(false)}
+            title="Expandir painel de campos"
+            className="flex h-9 w-6 shrink-0 items-center justify-center rounded-md border border-border text-muted-foreground hover:text-foreground"
           >
-            {saving ? "Salvando..." : editingChartId ? "Atualizar gráfico" : "Salvar como gráfico"}
+            ›
           </button>
+        )}
+
+        <div className="min-w-0 flex-1 space-y-3">
+          <FiltersSection
+            state={filterState}
+            onChange={(next) => setChartConfig((prev) => ({ ...prev, filterState: next }))}
+            dimensions={allDimensions}
+          />
+
+          <VisualizationSection
+            data={data}
+            loading={loading}
+            error={error}
+            validationError={validationError}
+            chartType={chartType}
+            onChartTypeChange={setChartType}
+            chartConfig={chartConfig}
+            onChartConfigChange={setChartConfig}
+            query={query}
+            executedQuery={executedQuery}
+          />
+
+          <DataSection
+            data={data}
+            loading={loading}
+            error={error}
+            query={query}
+            executedQuery={executedQuery}
+            selectedMeasures={selectedMeasures}
+            chartConfig={chartConfig}
+            onChartConfigChange={setChartConfig}
+            open={dataSectionOpen}
+            onOpenChange={setDataSectionOpen}
+            tab={dataTab}
+            onTabChange={setDataTab}
+          />
         </div>
       </div>
+
+      <SaveDialog
+        open={saveDialogOpen}
+        onOpenChange={setSaveDialogOpen}
+        chartName={chartName}
+        onChartNameChange={setChartName}
+        spaceId={spaceId}
+        onSpaceIdChange={setSpaceId}
+        spaces={spaces}
+        onSave={handleSave}
+        saving={saving}
+        canSave={Boolean(query && spaceId)}
+        saveLabel={editingChartId ? "Atualizar gráfico" : "Salvar como gráfico"}
+      />
+
+      <CombineResultsDialog
+        open={combineDialogOpen}
+        onOpenChange={setCombineDialogOpen}
+        ownDimensions={selectedDimensions}
+        merge={chartConfig.merge}
+        onChange={(merge) => setChartConfig((prev) => ({ ...prev, merge }))}
+        excludeChartId={editingChartId ?? undefined}
+      />
     </div>
   );
 }

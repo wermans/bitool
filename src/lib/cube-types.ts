@@ -63,6 +63,16 @@ export type ChartConfig = {
   numberFormat?: "default" | "currency" | "percent" | "compact";
   tableCalculations?: import("@/lib/table-calculations").TableCalc[];
   merge?: MergeConfig;
+  // Estado editável dos filtros do Explorer (grupos AND/OR) — convertido
+  // pro formato and/or nativo do Cube.js só na hora de montar a query
+  // (ver toCubeFilters em src/lib/filter-groups.ts). Guardado aqui, e não
+  // dentro de cubeQuery.filters, porque cubeQuery é sempre "o que vai pro
+  // Cube.js", não a estrutura de edição da UI.
+  filterState?: import("@/lib/filter-groups").FilterState;
+  // Controles da seção Data (Fase 4) — Row Limit alimenta query.limit e
+  // Totais liga o somatório de measures na aba Results.
+  rowLimit?: number;
+  showTotals?: boolean;
 };
 
 export type CubeRow = Record<string, string | number | boolean | null>;

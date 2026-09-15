@@ -4,6 +4,11 @@ Plataforma interna de Analytics & Métricas — camada semântica em Cube.js,
 governança/RLS, Spaces & Dashboards, Explorer ad-hoc e Alertas. Inspirada em
 Lightdash e Cube.js.
 
+> **Assumindo o projeto agora?** Leia [`docs/HANDOFF.md`](./docs/HANDOFF.md)
+> primeiro — cobre arquitetura e o porquê de cada escolha, todos os módulos
+> implementados, decisões de design não óbvias e limitações conhecidas. Este
+> README fica com o essencial de "como subir"; o handoff é o mapa completo.
+
 ## Arquitetura
 
 ```

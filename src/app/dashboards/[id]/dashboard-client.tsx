@@ -6,7 +6,7 @@ import "react-grid-layout/css/styles.css";
 import "react-resizable/css/styles.css";
 import { AnimatePresence, motion } from "framer-motion";
 import { CubeChart } from "@/components/cube-chart";
-import { FilterGroupsEditor } from "./filter-groups-editor";
+import { FilterGroupsEditor } from "@/components/filter-groups-editor";
 import { toCubeFilters, type FilterState } from "@/lib/filter-groups";
 import type { ChartConfig, CubeFilter, CubeQuery, ChartType } from "@/lib/cube-types";
 
