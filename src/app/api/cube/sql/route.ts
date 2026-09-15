@@ -5,9 +5,9 @@ import { getCubeApiForSession } from "@/lib/cube-client";
 
 export const dynamic = "force-dynamic";
 
-// Proxy fino para o Cube.js: assina o securityContext (RLS) e repassa a
-// query tal como veio do client (Explorer/Dashboards). Nenhum cache é feito
-// aqui — toda a performance/caching é responsabilidade do Cube (Cube Store).
+// Devolve o SQL que o Cube.js geraria pra essa query — chamada separada do
+// /load (cubeApi.sql() nunca executa a query, só compila). Alimenta a aba
+// SQL da seção Data, sem custo de rodar a consulta de verdade.
 export async function POST(req: NextRequest) {
   const session = await getServerSession(authOptions);
   if (!session) {
@@ -21,17 +21,10 @@ export async function POST(req: NextRequest) {
 
   try {
     const cubeApi = getCubeApiForSession(session);
-    const resultSet = await cubeApi.load(body.query);
-    const result = resultSet.serialize().loadResponse.results[0];
-    return NextResponse.json({
-      data: resultSet.rawData(),
-      lastRefreshTime: result?.lastRefreshTime ?? null,
-      usedPreAggregations: Boolean(
-        result?.usedPreAggregations && Object.keys(result.usedPreAggregations).length > 0
-      ),
-    });
+    const sqlQuery = await cubeApi.sql(body.query);
+    return NextResponse.json({ sql: sqlQuery.sql() });
   } catch (err) {
-    const message = err instanceof Error ? err.message : "Erro ao consultar o Cube.js";
+    const message = err instanceof Error ? err.message : "Erro ao gerar SQL";
     return NextResponse.json({ error: message }, { status: 502 });
   }
 }
